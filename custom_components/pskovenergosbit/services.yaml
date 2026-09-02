@@ -1,0 +1,25 @@
+submit_readings:
+  name: Отправить показания
+  description: Передать полное показание электросчётчика в личный кабинет.
+  fields:
+    value:
+      name: Показание
+      description: Полное значение счётчика, например 26370
+      required: true
+      example: 26370
+      selector:
+        number:
+          min: 0
+          max: 99999999
+          mode: box
+          unit_of_measurement: kWh
+    night:
+      name: Ночь / Т2
+      description: Показание ночной зоны, если счётчик двухтарифный
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 99999999
+          mode: box
+          unit_of_measurement: kWh

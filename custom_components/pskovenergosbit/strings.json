@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Псковэнергосбыт",
+        "description": "Логин и пароль от личного кабинета https://epd.pskovenergosbit.ru/",
+        "data": {
+          "username": "Логин",
+          "password": "Пароль"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Неверный логин или пароль",
+      "cannot_connect": "Не удалось подключиться к кабинету",
+      "unknown": "Неизвестная ошибка"
+    },
+    "abort": {
+      "already_configured": "Этот лицевой счёт уже добавлен"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Псковэнергосбыт",
+        "data": {
+          "scan_interval_hours": "Интервал обновления, часов"
+        }
+      }
+    }
+  }
+}
