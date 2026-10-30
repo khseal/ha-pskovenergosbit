@@ -1,28 +1,22 @@
-"""Клиент ЛК Псковэнергосбыт (epd.pskovenergosbit.ru)."""
+"""Клиент личного кабинета ДомРесурс (domres.ru) для Псковэнергосбыта."""
 
 from __future__ import annotations
 
 import logging
-import re
 import socket
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote
 
 import requests
-from bs4 import BeautifulSoup
 
 _LOGGER = logging.getLogger(__name__)
 
-EPD = "https://epd.pskovenergosbit.ru"
-ID = "https://id.pskovenergosbit.ru"
-LOGIN_START = (
-    f"{EPD}/ClientIdentity/Account/ExternalLogin"
-    "?provider=sso&prompt=select_account&handler=Challenge"
-)
+API = "https://domres.ru/api"
+CUSTOMER = "ikus-mes"
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
 _orig_getaddrinfo = socket.getaddrinfo
@@ -45,56 +39,45 @@ class AuthError(CabinetError):
 
 
 @dataclass
+class Scale:
+    scale_id: int
+    name: str
+    last: float | None = None
+    last_date: str | None = None
+    unit: str = ""
+
+
+@dataclass
 class Meter:
     account: str
+    account_id: str
     base_id: str
     counter_id: str
     counter_number: str
     service: str
     counter_name: str = ""
+    scales: list[Scale] = field(default_factory=list)
     last: float | None = None
     last_date: str | None = None
+
+    @property
+    def scale_id(self) -> int | None:
+        return self.scales[0].scale_id if self.scales else None
 
 
 @dataclass
 class CabinetState:
     account: str
     base_id: str
+    account_id: str = ""
     owner: str = ""
     address: str = ""
     meters: list[Meter] = field(default_factory=list)
-    token: str = ""
+    reading_state: str = ""
 
     @property
     def meter(self) -> Meter | None:
         return self.meters[0] if self.meters else None
-
-
-def _soup(html: str) -> BeautifulSoup:
-    return BeautifulSoup(html, "html.parser")
-
-
-def _form_data(form) -> dict[str, str]:
-    data: dict[str, str] = {}
-    for inp in form.find_all("input"):
-        name = inp.get("name")
-        if not name:
-            continue
-        itype = (inp.get("type") or "text").lower()
-        if itype in {"checkbox", "radio"} and not inp.has_attr("checked"):
-            continue
-        data[name] = inp.get("value") or ""
-    return data
-
-
-def _csrf_token(session: requests.Session, html: str) -> str:
-    hidden = _soup(html).find("input", attrs={"name": "__RequestVerificationToken"})
-    if hidden and hidden.get("value"):
-        return str(hidden["value"])
-    for cookie in session.cookies:
-        if "Antiforgery" in cookie.name:
-            return cookie.value or ""
-    return ""
 
 
 def _request(session: requests.Session, method: str, url: str, **kwargs: Any) -> requests.Response:
@@ -105,46 +88,44 @@ def _request(session: requests.Session, method: str, url: str, **kwargs: Any) ->
         raise CabinetError(f"сеть: {exc}") from exc
 
 
+def _error_message(response: requests.Response) -> str:
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        message = str(data.get("message") or "").strip()
+        if message and message.lower() not in {"неизвестная ошибка сервера"}:
+            return message
+        cause = str(data.get("cause") or "").strip()
+        if cause:
+            return cause
+    text = response.text.strip()
+    return text[:300] or f"HTTP {response.status_code}"
+
+
 def _parse_float(raw: Any) -> float | None:
     if raw in ("", None):
         return None
     try:
-        return float(str(raw).replace(",", "."))
+        return float(str(raw).replace(",", ".").replace(" ", ""))
     except ValueError:
         return None
 
 
-def _parse_meters(html: str, account: str, base_id: str) -> list[Meter]:
-    page = _soup(html)
-    date_match = re.search(r"(\d{2}\.\d{2}\.\d{4})", html)
-    last_date = date_match.group(1) if date_match else None
-    meters: list[Meter] = []
-    for inp in page.select("input.new-indication, input[name^='newIndication']"):
-        counter_id = inp.get("data-id") or ""
-        name = inp.get("name") or ""
-        if not counter_id:
-            match = re.search(r"\[(\d+)\]", name)
-            counter_id = match.group(1) if match else ""
-        last_el = page.select_one(f"input.last-indication[data-id='{counter_id}']")
-        last = _parse_float(last_el.get("value") if last_el else None)
-        meters.append(
-            Meter(
-                account=account,
-                base_id=base_id,
-                counter_id=str(counter_id),
-                counter_number=inp.get("data-number") or "",
-                service=inp.get("data-service") or "Электроснабжение",
-                counter_name=inp.get("data-name") or "",
-                last=last,
-                last_date=last_date,
-            )
-        )
-    return meters
+def _login_type(username: str) -> str:
+    return "EMAIL" if "@" in username else "PHONE"
+
+
+def _owner_name(profile: dict[str, Any]) -> str:
+    name = profile.get("name") if isinstance(profile.get("name"), dict) else {}
+    parts = [str(name.get("last") or ""), str(name.get("first") or ""), str(name.get("patronymic") or "")]
+    return " ".join(part for part in parts if part).strip()
 
 
 class PskovenergosbitClient:
     def __init__(self, username: str, password: str) -> None:
-        self._username = username
+        self._username = username.strip()
         self._password = password
 
     def _session(self) -> requests.Session:
@@ -153,187 +134,195 @@ class PskovenergosbitClient:
         session.headers.update(
             {
                 "User-Agent": USER_AGENT,
+                "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "ru-RU,ru;q=0.9",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Content-Type": "application/json",
+                "Customer": CUSTOMER,
             }
         )
         return session
 
     def _login(self, session: requests.Session) -> None:
-        first = _request(session, "GET", LOGIN_START, allow_redirects=True)
-        page = _soup(first.text)
-        form = page.find("form", id="account") or page.find("form")
-        if not form:
-            raise CabinetError("нет формы входа")
-        data = _form_data(form)
-        data["Input.Login"] = self._username
-        data["Input.Password"] = self._password
-        data["Input.RememberLogin"] = "false"
-        data["RecaptchaToken"] = data.get("RecaptchaToken", "")
         response = _request(
             session,
             "POST",
-            first.url,
-            data=data,
-            allow_redirects=True,
-            headers={"Referer": first.url, "Origin": ID},
+            f"{API}/v8/users/auth",
+            json={
+                "login": self._username,
+                "password": self._password,
+                "type": _login_type(self._username),
+            },
+            headers={"withTotp": "true", "Captcha": "none"},
         )
-        if "Неверный логин или пароль" in response.text:
-            raise AuthError("неверный логин или пароль")
-        if "id.pskovenergosbit.ru/Auth/Login" in response.url and "Input.Password" in response.text:
-            raise AuthError("логин отклонён")
-        if "code" in response.text and "signin-oidc" in response.text:
-            response = self._follow_oidc(session, response)
-        if "epd.pskovenergosbit.ru" not in response.url:
-            raise CabinetError(f"после входа неожиданный URL: {response.url}")
-
-    def _follow_oidc(self, session: requests.Session, response: requests.Response) -> requests.Response:
-        page = _soup(response.text)
-        for form in page.find_all("form"):
-            data = _form_data(form)
-            if "code" in data and "state" in data:
-                action = urljoin(response.url, form.get("action") or "")
-                return _request(session, "POST", action, data=data, allow_redirects=True)
-        raise CabinetError("не найдена форма OIDC после логина")
+        if response.status_code == 424:
+            raise AuthError("кабинет запросил код подтверждения. Войдите один раз на https://domres.ru/")
+        if response.status_code == 449:
+            raise AuthError("кабинет запросил капчу. Войдите один раз на https://domres.ru/")
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        token = data.get("auth") if isinstance(data, dict) else None
+        if response.status_code != 200 or not token:
+            message = _error_message(response) if response.status_code else "вход не выполнен"
+            if response.status_code in {400, 401, 403} or "парол" in message.lower() or "логин" in message.lower():
+                raise AuthError(message or "неверный логин или пароль")
+            raise AuthError(message or "неверный логин или пароль")
+        session.headers["Authorization"] = f"Bearer {token}"
 
     def fetch(self) -> CabinetState:
         session = self._session()
         self._login(session)
         return self._load_state(session)
 
-    def _load_state(self, session: requests.Session) -> CabinetState:
-        accounts_page = _request(session, "GET", f"{EPD}/SN/AllAccountsIndications")
-        token = _csrf_token(session, accounts_page.text)
-        page = _soup(accounts_page.text)
-        hidden = page.select_one("form input[name='accountNumber']")
-        base_el = page.select_one("form input[name='baseId']")
-        if not hidden or not base_el:
-            raise CabinetError("не найден лицевой счёт в кабинете")
-        account = str(hidden.get("value") or "")
-        base_id = str(base_el.get("value") or "")
-        owner_el = page.select_one("form input[name='owner']")
-        address_el = page.select_one("form input[name='address']")
-        indications = _request(
-            session,
-            "GET",
-            f"{EPD}/SN/GetIndications",
-            headers={"X-Requested-With": "XMLHttpRequest"},
-        )
-        meters = _parse_meters(indications.text, account, base_id)
-        if not meters:
-            card = _request(
-                session,
-                "POST",
-                f"{EPD}/SN/GetAccountIndications",
-                data={
-                    "baseId": base_id,
-                    "accountNumber": account,
-                    "__RequestVerificationToken": token,
-                },
-                headers={"X-Requested-With": "XMLHttpRequest"},
+    def _accounts(self, session: requests.Session) -> list[dict[str, Any]]:
+        response = _request(session, "GET", f"{API}/v8/accounts/light")
+        if response.status_code != 200:
+            raise CabinetError(_error_message(response))
+        data = response.json()
+        if not isinstance(data, list) or not data:
+            raise CabinetError(
+                "в кабинете ДомРесурс нет привязанного лицевого счёта. "
+                "Добавьте его на https://domres.ru/ в разделе адресов"
             )
-            meters = _parse_meters(card.text, account, base_id)
+        return [item for item in data if isinstance(item, dict)]
+
+    def _profile_owner(self, session: requests.Session) -> str:
+        response = _request(session, "GET", f"{API}/v6/users/current")
+        if response.status_code != 200:
+            return ""
+        try:
+            data = response.json()
+        except ValueError:
+            return ""
+        return _owner_name(data) if isinstance(data, dict) else ""
+
+    def _load_state(self, session: requests.Session) -> CabinetState:
+        accounts = self._accounts(session)
+        owner = self._profile_owner(session)
+        meters: list[Meter] = []
+        chosen = accounts[0]
+        reading_state = ""
+        for account in accounts:
+            account_id = str(account.get("id") or "")
+            register = str((account.get("tenancy") or {}).get("register") or account_id)
+            provider = str((account.get("service") or {}).get("providerId") or "")
+            loaded = self._meters(session, account_id, register, provider)
+            if loaded:
+                chosen = account
+                meters = loaded
+                reading_state = self._reading_state(session, account_id)
+                if any("электро" in meter.service.lower() for meter in loaded):
+                    break
         if not meters:
-            raise CabinetError("счётчики на странице показаний не найдены")
+            raise CabinetError("счётчики в кабинете не найдены")
+        tenancy = chosen.get("tenancy") or {}
         return CabinetState(
-            account=account,
-            base_id=base_id,
-            owner=str(owner_el.get("value") or "") if owner_el else "",
-            address=str(address_el.get("value") or "") if address_el else "",
+            account=str(tenancy.get("register") or chosen.get("id") or ""),
+            account_id=str(chosen.get("id") or ""),
+            base_id=str((chosen.get("service") or {}).get("providerId") or ""),
+            owner=owner,
+            address=str(chosen.get("address") or ""),
             meters=meters,
-            token=token,
+            reading_state=reading_state,
         )
+
+    def _meters(
+        self,
+        session: requests.Session,
+        account_id: str,
+        register: str,
+        provider: str,
+    ) -> list[Meter]:
+        response = _request(session, "GET", f"{API}/v6/accounts/{account_id}/meters/info")
+        if response.status_code != 200:
+            raise CabinetError(_error_message(response))
+        data = response.json()
+        if not isinstance(data, list):
+            return []
+        meters: list[Meter] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            identity = item.get("id") if isinstance(item.get("id"), dict) else {}
+            scales: list[Scale] = []
+            for scale in item.get("indications") or []:
+                if not isinstance(scale, dict):
+                    continue
+                scales.append(
+                    Scale(
+                        scale_id=int(scale.get("meterScaleId") or 0),
+                        name=str(scale.get("scaleName") or ""),
+                        last=_parse_float(scale.get("previousReading")),
+                        last_date=str(scale.get("previousReadingDate") or "") or None,
+                        unit=str(scale.get("unit") or ""),
+                    )
+                )
+            subservice = item.get("subservice") if isinstance(item.get("subservice"), dict) else {}
+            first = scales[0] if scales else None
+            meters.append(
+                Meter(
+                    account=register,
+                    account_id=account_id,
+                    base_id=str(identity.get("provider") or provider),
+                    counter_id=str(identity.get("registration") or ""),
+                    counter_number=str(item.get("serial") or ""),
+                    service=str(subservice.get("name") or item.get("name") or "Электроэнергия"),
+                    counter_name=str(item.get("name") or ""),
+                    scales=scales,
+                    last=first.last if first else None,
+                    last_date=first.last_date if first else None,
+                )
+            )
+        electricity = [meter for meter in meters if "электро" in meter.service.lower()]
+        return electricity or meters
+
+    def _reading_state(self, session: requests.Session, account_id: str) -> str:
+        response = _request(session, "GET", f"{API}/v6/accounts/{account_id}/reading/state")
+        if response.status_code != 200:
+            return ""
+        try:
+            data = response.json()
+        except ValueError:
+            return response.text.strip().strip('"')
+        return str(data).strip().strip('"')
 
     def submit(self, value: float, night: float | None = None) -> CabinetState:
         session = self._session()
         self._login(session)
         state = self._load_state(session)
-        values: dict[str, float] = {"t1": value}
-        if night is not None:
-            values["t2"] = night
-        self._post_readings(session, state, values)
+        self._post_readings(session, state, value, night)
         return self._load_state(session)
 
     def _post_readings(
         self,
         session: requests.Session,
         state: CabinetState,
-        values: dict[str, float],
+        value: float,
+        night: float | None,
     ) -> None:
-        meters = state.meters
-        model: list[dict[str, str]] = []
-        for i, meter in enumerate(meters):
-            zone = "t1" if i == 0 else f"t{i + 1}"
-            if zone not in values:
-                continue
-            val = values[zone]
-            if meter.last is not None and val < meter.last:
-                raise CabinetError(
-                    f"новое показание {val:g} меньше последнего {meter.last:g} "
-                    f"(счётчик {meter.counter_number})"
-                )
-            model.append(
-                {
-                    "account": meter.account,
-                    "baseId": meter.base_id,
-                    "counterId": meter.counter_id,
-                    "serviceTypeName": meter.service,
-                    "counterNumber": meter.counter_number,
-                    "counterName": meter.counter_name,
-                    "val": f"{val:g}",
-                }
-            )
-        if not model:
+        meter = state.meter
+        if meter is None or not meter.counter_id or not meter.scales:
             raise CabinetError("нечего отправлять")
-
-        payload: dict[str, str] = {}
-        if state.token:
-            payload["__RequestVerificationToken"] = state.token
-        for i, item in enumerate(model):
-            for key, item_value in item.items():
-                payload[f"model[{i}].{key}"] = item_value
-
+        readings = [(meter.scales[0], value)]
+        if night is not None:
+            if len(meter.scales) < 2:
+                raise CabinetError("у счётчика нет второй тарифной зоны")
+            readings.append((meter.scales[1], night))
+        payload = []
+        for scale, reading in readings:
+            if scale.last is not None and reading < scale.last:
+                raise CabinetError(
+                    f"новое показание {reading:g} меньше последнего {scale.last:g} "
+                    f"(счётчик {meter.counter_number}, {scale.name or 'тариф'})"
+                )
+            payload.append({"scaleId": scale.scale_id, "value": reading})
         response = _request(
             session,
             "POST",
-            f"{EPD}/SN/SetReadings",
-            data=payload,
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": f"{EPD}/SN/AllAccountsIndications",
-                "Origin": EPD,
-                "RequestVerificationToken": state.token,
-            },
+            f"{API}/v8/accounts/{meter.account_id}/meters/{quote(meter.counter_id, safe='')}/reading",
+            json=payload,
         )
-        self._raise_if_failed(response)
-        _LOGGER.debug("SetReadings HTTP %s: %s", response.status_code, response.text[:500])
-
-    def _raise_if_failed(self, response: requests.Response) -> None:
-        ctype = response.headers.get("Content-Type", "")
-        body = response.text.strip()
-        if "json" in ctype:
-            try:
-                data = response.json()
-            except ValueError:
-                data = None
-            if isinstance(data, list):
-                ok = [x for x in data if isinstance(x, dict) and x.get("code") in (0, "0")]
-                errors = [
-                    x
-                    for x in data
-                    if isinstance(x, dict) and x.get("code") not in (0, 1, "0", "1", None)
-                ]
-                if ok:
-                    return
-                if errors:
-                    msgs = "; ".join(str(x.get("message") or x) for x in errors)
-                    raise CabinetError(msgs or "сервер вернул ошибку")
-            if isinstance(data, dict) and data.get("success") is False:
-                raise CabinetError(str(data.get("message") or data))
-            return
-        low = body.lower()
-        if any(word in low for word in ("успеш", "принят", "сохранен", "переданы")):
-            return
-        snippet = re.sub(r"\s+", " ", _soup(body).get_text(" ", strip=True))[:400]
-        if any(word in low for word in ("ошиб", "неверн", "нельзя")):
-            raise CabinetError(snippet or f"HTTP {response.status_code}")
+        if response.status_code not in {200, 201, 204}:
+            raise CabinetError(_error_message(response))
+        _LOGGER.debug("reading submit HTTP %s", response.status_code)

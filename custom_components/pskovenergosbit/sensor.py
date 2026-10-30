@@ -26,7 +26,7 @@ def _device(coordinator: PskovenergosbitCoordinator) -> DeviceInfo:
         name="Псковэнергосбыт",
         manufacturer="АО Псковэнергосбыт",
         model="Личный кабинет",
-        configuration_url="https://epd.pskovenergosbit.ru/",
+        configuration_url="https://domres.ru/",
     )
 
 

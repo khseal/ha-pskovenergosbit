@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Pskovenergosbyt",
-        "description": "Login and password for https://epd.pskovenergosbit.ru/",
+        "description": "Email or phone and password for https://domres.ru/",
         "data": {
           "username": "Username",
           "password": "Password"

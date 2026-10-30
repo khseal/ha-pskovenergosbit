@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Псковэнергосбыт",
-        "description": "Логин и пароль от личного кабинета https://epd.pskovenergosbit.ru/",
+        "description": "Email или телефон и пароль от личного кабинета https://domres.ru/",
         "data": {
           "username": "Логин",
           "password": "Пароль"

@@ -9,6 +9,7 @@ venv/
 _probe/
 _epd/
 _logo/
+_domres/
 tmp_cookies.txt
 tmp_*.txt
 *.cookies

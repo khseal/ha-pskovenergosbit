@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Отправка показаний в ЛК Псковэнергосбыт (epd.pskovenergosbit.ru).
+"""Отправка показаний в ЛК ДомРесурс (domres.ru).
 
 Примеры:
   python3 send_readings.py --info

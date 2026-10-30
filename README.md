@@ -1,6 +1,6 @@
 # Псковэнергосбыт для Home Assistant
 
-Кастомная интеграция [личного кабинета](https://epd.pskovenergosbit.ru/) АО Псковэнергосбыт: показывает последние показания электросчётчика и позволяет передать новые прямо из Home Assistant.
+Кастомная интеграция [личного кабинета ДомРесурс](https://domres.ru/) для АО Псковэнергосбыт: показывает последние показания электросчётчика и позволяет передать новые прямо из Home Assistant.
 
 Неофициальный проект, не связан с АО «Псковэнергосбыт».
 
@@ -29,7 +29,7 @@
 3. Найдите **Псковэнергосбыт** и установите.
 4. Перезапустите Home Assistant.
 5. Настройки → Устройства и службы → Добавить интеграцию → **Псковэнергосбыт**.
-6. Введите логин и пароль от [epd.pskovenergosbit.ru](https://epd.pskovenergosbit.ru/).
+6. Введите email или телефон и пароль от [domres.ru](https://domres.ru/).
 
 ## Ручная установка
 
@@ -62,25 +62,57 @@ data:
   # night: 12010   # только для двухтарифного счётчика
 ```
 
-Пример автоматизации 21-го числа каждого месяца:
+Готовая автоматизация на 21-е число каждого месяца: к последним показаниям из кабинета прибавляется **140 кВт⋅ч**, в кабинет уходит полное значение. Файл: [`examples/monthly_add_140.yaml`](examples/monthly_add_140.yaml).
+
+Настройки → Автоматизации → создать → меню ⋮ → «Изменить в YAML» — вставьте содержимое файла.
 
 ```yaml
-alias: Показания Псковэнергосбыт
+alias: Показания Псковэнергосбыт +140
+description: 21-го числа каждого месяца передаёт последние показания плюс 140 кВт⋅ч.
+mode: single
 triggers:
   - trigger: time
-    at: "14:00:00"
+    at: "10:00:00"
 conditions:
   - condition: template
     value_template: "{{ now().day == 21 }}"
 actions:
-  - action: pskovenergosbit.submit_readings
-    data:
-      value: "{{ states('sensor.your_energy_meter') | float }}"
+  - variables:
+      increment: 140
+      last: >-
+        {% set found = states.sensor
+           | selectattr('attributes.account', 'defined')
+           | selectattr('attributes.meter', 'defined')
+           | selectattr('attributes.last_date', 'defined')
+           | list %}
+        {{ found[0].state | float(none) if found else none }}
+  - if:
+      - condition: template
+        value_template: "{{ last is number }}"
+    then:
+      - action: pskovenergosbit.submit_readings
+        data:
+          value: "{{ last + increment }}"
+      - action: persistent_notification.create
+        data:
+          title: Псковэнергосбыт
+          message: "Отправлены показания {{ (last + increment) | round(0) }} (было {{ last | round(0) }} + {{ increment }} кВт⋅ч)."
+    else:
+      - action: persistent_notification.create
+        data:
+          title: Псковэнергосбыт
+          message: Не удалось прочитать последние показания, отправка пропущена.
+```
+
+Время отправки — 10:00, его можно поменять. Если датчик последних показаний не находится сам, подставьте его `entity_id` вместо блока `last`:
+
+```yaml
+last: "{{ states('sensor.pskovenergosbyt_poslednie_pokazaniya') | float(none) }}"
 ```
 
 ## Скрипт из командной строки
 
-Зависимости: `pip install -r requirements.txt` либо пакеты `python3-requests` и `python3-bs4`.
+Зависимости: `pip install -r requirements.txt` либо пакет `python3-requests`.
 
 ```bash
 export PES_LOGIN="ваш_логин"
@@ -95,7 +127,7 @@ python3 send_readings.py 26370 --dry-run
 
 ## Замечания
 
-- Кабинет: [epd.pskovenergosbit.ru](https://epd.pskovenergosbit.ru/), вход через ЖКХ ID.
-- Старый сайт `fl.pskovenergosbit.ru` не используется.
+- Кабинет: [domres.ru](https://domres.ru/). Старые сайты `epd.pskovenergosbit.ru` и `fl.pskovenergosbit.ru` больше не используются.
+- Лицевой счёт должен быть привязан к профилю ДомРесурс.
 - Интеграция ходит в интернет при каждом обновлении и при отправке показаний.
 - Логотип и название принадлежат АО «Псковэнергосбыт» и используются только для идентификации сервиса.
